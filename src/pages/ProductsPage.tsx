@@ -2,24 +2,25 @@ import { useState, useEffect, useCallback } from 'react';
 import { AppLayout } from '@/components/layouts/AppLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from '@/components/ui/alert-dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import { getProducts, addProduct, updateProduct, deleteProduct, setProductDiscount } from '@/services/products';
 import { getBranches } from '@/services/branches';
 import { getSuppliers } from '@/services/suppliers';
 import { getPromotions, upsertPromotion, deactivatePromotion } from '@/services/promotions';
 import { useAuth } from '@/contexts/AuthContext';
-import type { Product, Branch, Supplier, Promotion, DiscountType } from '@/types/index';
+import type { Product, Branch, Supplier, Promotion } from '@/types/index';
 import { SmartImportDialog } from '@/components/products/SmartImportDialog';
+
+// අපේ අලුත් Barcode Form එක මෙතනින් Import කරගන්නවා 🎯
+import AddProductForm from '@/components/products/AddProductForm';
+
 import {
   Package, Plus, RefreshCw, Pencil, Trash2, Download,
   AlertTriangle, Tag, Gift, X, Check, Clock,
@@ -27,7 +28,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { cn } from '@/lib/utils';
-import { isFloatUnit, inputStep, fmtQty } from '@/lib/unitUtils';
+import { fmtQty } from '@/lib/unitUtils';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const UNITS = [
@@ -43,11 +44,6 @@ const UNITS = [
   { value: 'bottle', label: 'bottle — බෝතලය' },
   { value: 'bag',    label: 'bag — බෑගය' },
 ];
-
-const EMPTY_FORM = {
-  barcode: '', name: '', unit: 'pcs', cost: '', price: '', qty: '',
-  expiry: '', branch_id: 'none', supplier_id: 'none',
-};
 
 // ─── Expiry helpers ───────────────────────────────────────────────────────────
 function getExpiryStatus(expiry: string): 'expired' | 'soon' | 'ok' | 'none' {
@@ -93,7 +89,7 @@ function OfferPanel({
 }) {
   const [offerType, setOfferType] = useState<'none' | 'discount' | 'promo'>('none');
   const [discountVal, setDiscountVal] = useState(String(product.discount_value || ''));
-  const [buyQty, setBuyQty]   = useState(String(promotion?.buy_qty  ?? ''));
+  const [buyQty, setBuyQty]   = useState(String(promotion?.buy_qty   ?? ''));
   const [freeQty, setFreeQty] = useState(String(promotion?.free_qty ?? ''));
   const [saving, setSaving]   = useState(false);
 
@@ -229,11 +225,8 @@ export default function ProductsPage() {
   const [promotions, setPromotions] = useState<Promotion[]>([]);
   const [loading,    setLoading]    = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editProduct, setEditProduct] = useState<Product | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Product | null>(null);
-  const [form, setForm] = useState({ ...EMPTY_FORM });
-  const [saving,  setSaving]  = useState(false);
-  const [search,  setSearch]  = useState('');
+  const [search,   setSearch]   = useState('');
   const [expiryFilter, setExpiryFilter] = useState<'all' | 'expired' | 'soon'>('all');
 
   // ── Smart import state ────────────────────────────────────────────────────
@@ -277,64 +270,30 @@ export default function ProductsPage() {
   });
 
   const getSupplierName = (id: string | null) => suppliers.find(s => s.id === id)?.name ?? '—';
-  const getBranchName   = (id: string | null) => branches.find(b => b.id === id)?.name ?? '—';
   const getUnitLabel    = (unit: string) => UNITS.find(u => u.value === unit)?.value ?? unit;
 
-  // ── Dialog helpers ──
-  const openAdd = () => {
-    setEditProduct(null);
-    setForm({ ...EMPTY_FORM });
-    setDialogOpen(true);
-  };
-
-  const openEdit = (p: Product) => {
-    setEditProduct(p);
-    setForm({
-      barcode:     p.barcode,
-      name:        p.name,
-      unit:        p.unit || 'pcs',
-      cost:        String(p.cost),
-      price:       String(p.price),
-      qty:         String(p.qty),
-      expiry:      p.expiry || '',
-      branch_id:   p.branch_id   ?? 'none',
-      supplier_id: p.supplier_id ?? 'none',
-    });
-    setDialogOpen(true);
-  };
-
-  const handleSave = async () => {
-    const { barcode, name, unit, cost, price, qty, expiry } = form;
-    if (!barcode.trim() || !name.trim()) { toast.error('Barcode සහ නාමය ඇතුළත් කරන්න'); return; }
-    const costN  = parseFloat(cost);
-    const priceN = parseFloat(price);
-    const qtyN   = parseFloat(qty);
-    if (isNaN(costN)  || costN  < 0) { toast.error('ගැනුම් මිල ඇතුළත් කරන්න'); return; }
-    if (isNaN(priceN) || priceN <= 0) { toast.error('විකිණුම් මිල ඇතුළත් කරන්න'); return; }
-    if (isNaN(qtyN)   || qtyN   < 0) { toast.error('ප්‍රමාණය ඇතුළත් කරන්න'); return; }
-    if (costN > priceN) toast.warning('ගැනුම් මිල විකිණුම් මිලට වඩා වැඩිය!');
-
-    setSaving(true);
+  // ── Form එකෙන් එන දත්ත සේව් කරන ලොජික් එක ──
+  const handleSaveProductFromForm = async (productData: { name: string; price: number; barcode: string; shop_id: string | number }) => {
     try {
-      const branchId   = form.branch_id   === 'none' ? null : form.branch_id;
-      const supplierId = form.supplier_id === 'none' ? null : form.supplier_id;
-      if (editProduct) {
-        await updateProduct(editProduct.id, {
-          name: name.trim(), unit, cost: costN, price: priceN,
-          qty: qtyN, expiry: expiry || '', branch_id: branchId, supplier_id: supplierId,
-        });
-        toast.success('භාණ්ඩය යාවත්කාලීන කළා');
-      } else {
-        await addProduct(barcode.trim(), name.trim(), unit, costN, priceN, qtyN, expiry || '', branchId, supplierId, shopId);
-        toast.success('භාණ්ඩය එකතු කළා');
-      }
+      // මෙතනදී default අගයන් සහ මුදලාලි දීපු දත්ත එකතු කරලා Supabase එකට දානවා
+      await addProduct(
+        productData.barcode.trim(),
+        productData.name.trim(),
+        'pcs',        // Default unit
+        0,            // Cost price එක default 0යි
+        productData.price,
+        0,            // Initial stock quantity එක default 0යි
+        '',           // Expiry date default හිස්
+        null,         // Branch ID null
+        null,         // Supplier ID null
+        shopId
+      );
+      toast.success('භාණ්ඩය සාර්ථකව එකතු කළා!');
       setDialogOpen(false);
-      load();
+      load(); // ලැයිස්තුව Refresh කරනවා
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'දෝෂය';
       toast.error(msg.includes('duplicate') || msg.includes('unique') ? 'Barcode දැනටමත් ඇත' : msg);
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -360,17 +319,16 @@ export default function ProductsPage() {
       'වට්ටම':           p.discount_type === 'percent' ? `${p.discount_value}%` : '—',
       'Promotion': (() => { const pr = promoMap.get(p.id); return pr ? `Buy ${pr.buy_qty} Get ${pr.free_qty} Free` : '—'; })(),
       'සැපයුම්කරු':      getSupplierName(p.supplier_id),
-      'ශාඛාව':           getBranchName(p.branch_id),
       'Asset Value (Rs.)': p.qty * p.price,
       'Profit Margin (%)': p.price > 0 ? (((p.price - p.cost) / p.price) * 100).toFixed(1) : '0',
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Products');
+    const wb_append = XLSX.utils.book_append_sheet;
+    wb_append(wb, ws, 'Products');
     XLSX.writeFile(wb, `products_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
-  // Summary stats
   const expiredCount  = products.filter(p => getExpiryStatus(p.expiry) === 'expired').length;
   const expiringSoon  = products.filter(p => getExpiryStatus(p.expiry) === 'soon').length;
   const discountedCount = products.filter(p => p.discount_type === 'percent' && p.discount_value > 0).length;
@@ -406,7 +364,7 @@ export default function ProductsPage() {
                   <Upload className="w-3.5 h-3.5" />
                   <span className="sr-only md:not-sr-only">Import</span>
                 </Button>
-                <Button size="sm" onClick={openAdd} className="gap-1.5">
+                <Button size="sm" onClick={() => setDialogOpen(true)} className="gap-1.5">
                   <Plus className="w-3.5 h-3.5" />
                   <span>නව භාණ්ඩය</span>
                 </Button>
@@ -418,8 +376,8 @@ export default function ProductsPage() {
         {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
-            { label: 'සම්පූර්ණ භාණ්ඩ',    value: products.length,                          color: 'text-primary' },
-            { label: 'අඩු Stock (< 10)',    value: products.filter(p => p.qty < 10).length, color: 'text-destructive' },
+            { label: 'සම්පූර්ණ භාණ්ඩ',    value: products.length,                               color: 'text-primary' },
+            { label: 'අඩු Stock (< 10)',   value: products.filter(p => p.qty < 10).length, color: 'text-destructive' },
             { label: 'කල් ඉකුත් / ළඟාවේ', value: expiredCount + expiringSoon,              color: 'text-amber-500' },
             { label: 'Offers සක්‍රීය',      value: discountedCount + promoCount,             color: 'text-green-500' },
           ].map((s, i) => (
@@ -550,13 +508,7 @@ export default function ProductsPage() {
                               {isAdmin && (
                                 <TableCell className="whitespace-nowrap text-right">
                                   <div className="flex items-center justify-end gap-1">
-                                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(p)}>
-                                      <Pencil className="w-3.5 h-3.5" />
-                                    </Button>
-                                    <Button
-                                      variant="ghost" size="icon"
-                                      className="h-7 w-7 text-destructive hover:text-destructive"
-                                      onClick={() => setDeleteTarget(p)}>
+                                    <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteTarget(p)}>
                                       <Trash2 className="w-3.5 h-3.5" />
                                     </Button>
                                   </div>
@@ -634,251 +586,40 @@ export default function ProductsPage() {
               </Card>
             </TabsContent>
           )}
-
-          {/* ── Expiry Tab ── */}
-          {(expiredCount + expiringSoon) > 0 && (
-            <TabsContent value="expiry" className="mt-3">
-              <Card>
-                <CardHeader className="pb-2">
-                  <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <CardTitle className="text-base flex items-center gap-2 text-balance">
-                      <Clock className="w-4 h-4 text-amber-500" />
-                      Expiry අනතුරු ඇඟවීම
-                    </CardTitle>
-                    <div className="flex gap-1">
-                      {(['all','expired','soon'] as const).map(f => (
-                        <Button key={f} size="sm" variant={expiryFilter === f ? 'default' : 'outline'}
-                          className="h-7 text-xs px-3"
-                          onClick={() => setExpiryFilter(f)}>
-                          {f === 'all' ? 'සියල්ල' : f === 'expired' ? 'කල් ඉකුත්' : '30 දිනෙන්'}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <div className="w-full max-w-full overflow-x-auto bg-card rounded-b-lg">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="whitespace-nowrap">Barcode</TableHead>
-                          <TableHead className="whitespace-nowrap">නාමය</TableHead>
-                          <TableHead className="whitespace-nowrap">ඒකකය</TableHead>
-                          <TableHead className="whitespace-nowrap">Stock</TableHead>
-                          <TableHead className="whitespace-nowrap">කල් ඉකුත් දිනය</TableHead>
-                          <TableHead className="whitespace-nowrap">තත්ත්වය</TableHead>
-                          {isAdmin && <TableHead className="whitespace-nowrap text-right">ක්‍රියා</TableHead>}
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {products
-                          .filter(p => {
-                            const st = getExpiryStatus(p.expiry);
-                            if (expiryFilter === 'expired') return st === 'expired';
-                            if (expiryFilter === 'soon')    return st === 'soon';
-                            return st === 'expired' || st === 'soon';
-                          })
-                          .sort((a, b) => (a.expiry < b.expiry ? -1 : 1))
-                          .map(p => {
-                            const st = getExpiryStatus(p.expiry);
-                            return (
-                              <TableRow key={p.id} className={cn(st === 'expired' && 'bg-destructive/5')}>
-                                <TableCell className="whitespace-nowrap font-mono text-sm">{p.barcode}</TableCell>
-                                <TableCell className="whitespace-nowrap font-medium">{p.name}</TableCell>
-                                <TableCell className="whitespace-nowrap">
-                                  <Badge variant="outline" className="text-xs font-mono">{p.unit}</Badge>
-                                </TableCell>
-                                <TableCell className="whitespace-nowrap">
-                                  <Badge variant={p.qty < 10 ? 'destructive' : 'outline'}>{fmtQty(Number(p.qty), p.unit)}</Badge>
-                                </TableCell>
-                                <TableCell className="whitespace-nowrap text-sm">
-                                  {p.expiry ? new Date(p.expiry).toLocaleDateString('si-LK') : '—'}
-                                </TableCell>
-                                <TableCell className="whitespace-nowrap">
-                                  {st === 'expired'
-                                    ? <Badge variant="destructive" className="gap-1"><Clock className="w-3 h-3" />කල් ඉකුත්</Badge>
-                                    : <Badge className="bg-amber-500 text-white hover:bg-amber-500 gap-1"><Clock className="w-3 h-3" />ළඟාවේ</Badge>
-                                  }
-                                </TableCell>
-                                {isAdmin && (
-                                  <TableCell className="whitespace-nowrap text-right">
-                                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(p)}>
-                                      <Pencil className="w-3.5 h-3.5" />
-                                    </Button>
-                                  </TableCell>
-                                )}
-                              </TableRow>
-                            );
-                          })
-                        }
-                      </TableBody>
-                    </Table>
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-          )}
         </Tabs>
-      </div>
 
-      {/* ── Add / Edit Dialog ── */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-[calc(100%-2rem)] md:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>{editProduct ? 'භාණ්ඩය සංස්කරණය' : 'නව භාණ්ඩය'}</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3 py-2">
-            <div className="grid grid-cols-2 gap-3">
-
-              {/* Barcode */}
-              <div className="space-y-1.5 col-span-2">
-                <Label className="text-sm font-normal">Barcode</Label>
-                <Input
-                  placeholder="1234567890"
-                  value={form.barcode}
-                  onChange={e => setForm(f => ({ ...f, barcode: e.target.value }))}
-                  disabled={!!editProduct}
-                  className="px-3"
-                />
-              </div>
-
-              {/* Name */}
-              <div className="space-y-1.5 col-span-2">
-                <Label className="text-sm font-normal">භාණ්ඩ නාමය</Label>
-                <Input
-                  placeholder="Anchor Milk 400g"
-                  value={form.name}
-                  onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                  className="px-3"
-                />
-              </div>
-
-              {/* Unit */}
-              <div className="space-y-1.5">
-                <Label className="text-sm font-normal">ඒකකය (Unit)</Label>
-                <Select value={form.unit} onValueChange={v => setForm(f => ({ ...f, unit: v }))}>
-                  <SelectTrigger><SelectValue placeholder="ඒකකය" /></SelectTrigger>
-                  <SelectContent>
-                    {UNITS.map(u => (
-                      <SelectItem key={u.value} value={u.value}>{u.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Expiry */}
-              <div className="space-y-1.5">
-                <Label className="text-sm font-normal">කල් ඉකුත් දිනය (විකල්ප)</Label>
-                <Input
-                  type="date"
-                  value={form.expiry}
-                  onChange={e => setForm(f => ({ ...f, expiry: e.target.value }))}
-                  className="px-3"
-                />
-              </div>
-
-              {/* Cost */}
-              <div className="space-y-1.5">
-                <Label className="text-sm font-normal">ගැනුම් මිල (Rs.)</Label>
-                <Input
-                  type="number" min="0" step="0.01" placeholder="0.00"
-                  value={form.cost}
-                  onChange={e => setForm(f => ({ ...f, cost: e.target.value }))}
-                  className="px-3"
-                />
-              </div>
-
-              {/* Price */}
-              <div className="space-y-1.5">
-                <Label className="text-sm font-normal">විකිණුම් මිල (Rs.)</Label>
-                <Input
-                  type="number" min="0" step="0.01" placeholder="0.00"
-                  value={form.price}
-                  onChange={e => setForm(f => ({ ...f, price: e.target.value }))}
-                  className="px-3"
-                />
-              </div>
-
-              {/* Qty */}
-              <div className="space-y-1.5">
-                <Label className="text-sm font-normal">
-                  ප්‍රමාණය (Stock)
-                  {isFloatUnit(form.unit) && (
-                    <span className="text-muted-foreground ml-1 font-normal text-xs">— දශම ඉලක්කම් ✓</span>
-                  )}
-                </Label>
-                <Input
-                  type="number"
-                  min="0"
-                  step={inputStep(form.unit)}
-                  placeholder={isFloatUnit(form.unit) ? '0.000' : '0'}
-                  value={form.qty}
-                  onChange={e => setForm(f => ({ ...f, qty: e.target.value }))}
-                  className="px-3"
-                />
-              </div>
-
-              {/* Supplier */}
-              <div className="space-y-1.5">
-                <Label className="text-sm font-normal">සැපයුම්කරු (විකල්ප)</Label>
-                <Select value={form.supplier_id} onValueChange={v => setForm(f => ({ ...f, supplier_id: v }))}>
-                  <SelectTrigger><SelectValue placeholder="තෝරන්න" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">— නැත —</SelectItem>
-                    {suppliers.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Branch */}
-              <div className="space-y-1.5 col-span-2">
-                <Label className="text-sm font-normal">ශාඛාව (විකල්ප)</Label>
-                <Select value={form.branch_id} onValueChange={v => setForm(f => ({ ...f, branch_id: v }))}>
-                  <SelectTrigger><SelectValue placeholder="ශාඛාව" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">— නැත —</SelectItem>
-                    {branches.map(b => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
+        {/* ── Popup Dialog එක ඇතුළට අපේ අලුත් Form එක දානවා ── */}
+        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <DialogContent className="sm:max-w-[450px] p-4 gap-0 max-h-[90vh] overflow-y-auto">
+            <DialogHeader className="pb-3">
+              <DialogTitle className="text-base text-balance">නව භාණ්ඩයක් එක් කරන්න</DialogTitle>
+            </DialogHeader>
+            <div className="pt-2">
+              <AddProductForm shopId={shopId} onSaveProduct={handleSaveProductFromForm} />
             </div>
-          </div>
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>අවලංගු</Button>
-            <Button onClick={handleSave} disabled={saving}>
-              {saving ? 'සුරකිමින්...' : editProduct ? 'යාවත්කාලීන' : 'එකතු කරන්න'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </DialogContent>
+        </Dialog>
 
-      {/* ── Delete Alert ── */}
-      <AlertDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
-        <AlertDialogContent className="max-w-[calc(100%-2rem)] md:max-w-lg">
-          <AlertDialogHeader>
-            <AlertDialogTitle>භාණ්ඩය ඉවත් කරන්නද?</AlertDialogTitle>
-            <AlertDialogDescription>
-              "{deleteTarget?.name}" ඉවත් කිරීම ස්ථිර ක්‍රියාවකි.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>අවලංගු</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-              ඉවත් කරන්න
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        {/* Delete Dialog */}
+        <AlertDialog open={!!deleteTarget} onOpenChange={io => !io && setDeleteTarget(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>ඔබට විශ්වාසද?</AlertDialogTitle>
+              <AlertDialogDescription className="text-pretty">
+                {deleteTarget?.name} භාණ්ඩය පද්ධතියෙන් සම්පූර්ණයෙන්ම ඉවත් කරනු ඇත.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter className="mt-2">
+              <AlertDialogCancel>අවලංගු කරන්න</AlertDialogCancel>
+              <AlertDialogAction className="bg-destructive hover:bg-destructive text-destructive-foreground" onClick={handleDelete}>
+                ඉවත් කරන්න
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
-      {/* ── Smart Import Dialog ───────────────────────────────────────────── */}
-      <SmartImportDialog
-        open={smartImportOpen}
-        onOpenChange={setSmartImportOpen}
-        shopId={shopId}
-        onDone={load}
-      />
+        <SmartImportDialog open={smartImportOpen} onOpenChange={setSmartImportOpen} onImported={load} />
+      </div>
     </AppLayout>
   );
 }
