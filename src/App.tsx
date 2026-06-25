@@ -28,7 +28,10 @@ const App: React.FC = () => {
                       />
                     ))}
                     <Route path="/" element={<Navigate to="/billing" replace />} />
-                    <Route path="*" element={<Navigate to="/login" replace />} />
+                    {/* /login ආවොත් කෙලින්ම /billing පිටුවට හරවා යවයි */}
+                    <Route path="/login" element={<Navigate to="/billing" replace />} />
+                    {/* වෙනත් ඕනෑම නැති පිටුවක් ආවොත් /billing පිටුවට හරවා යවයි */}
+                    <Route path="*" element={<Navigate to="/billing" replace />} />
                   </Routes>
                 </main>
               </div>
