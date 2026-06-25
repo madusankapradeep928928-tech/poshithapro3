@@ -1,5 +1,4 @@
 import tailwindAnimate from 'tailwindcss-animate';
-import intersect from 'tailwindcss-intersect';
 
 export default {
     darkMode: ['class'],
@@ -152,7 +151,6 @@ export default {
     },
     plugins: [
         tailwindAnimate,
-        intersect,
         function ({addUtilities}) {
             addUtilities(
                 {
