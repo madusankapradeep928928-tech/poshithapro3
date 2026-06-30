@@ -20,7 +20,7 @@ import { getPromotions, upsertPromotion, deactivatePromotion } from '@/services/
 import { useAuth } from '@/contexts/AuthContext';
 import type { Product, Branch, Supplier, Promotion, DiscountType } from '@/types/index';
 import { SmartImportDialog } from '@/components/products/SmartImportDialog';
-
+import BarcodePrintDialog from '@/components/BarcodePrintDialog';
 import {
   Package, Plus, RefreshCw, Pencil, Trash2, Download,
   AlertTriangle, Tag, Gift, X, Check, Clock,
