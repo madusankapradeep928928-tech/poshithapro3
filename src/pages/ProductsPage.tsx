@@ -1,625 +1,482 @@
-import { useState, useEffect, useCallback } from 'react';
-import { AppLayout } from '@/components/layouts/AppLayout';
+import React, { useEffect, useState } from 'react';
+import { toast } from 'sonner';
+import { Plus, Edit2, Trash2, Search, Download, Upload, Printer, AlertTriangle, RefreshCw } from 'lucide-react';
+import { useAuth } from '@/contexts/AuthContext';
+import { useLanguage } from '@/contexts/LanguageContext';
+import MainLayout from '@/components/layouts/MainLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from '@/components/ui/alert-dialog';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Skeleton } from '@/components/ui/skeleton';
+import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { toast } from 'sonner';
-import { getProducts, addProduct, updateProduct, deleteProduct, setProductDiscount } from '@/services/products';
-import { getBranches } from '@/services/branches';
-import { getSuppliers } from '@/services/suppliers';
-import { getPromotions, upsertPromotion, deactivatePromotion } from '@/services/promotions';
-import { useAuth } from '@/contexts/AuthContext';
-import type { Product, Branch, Supplier, Promotion } from '@/types/index';
-import { SmartImportDialog } from '@/components/products/SmartImportDialog';
-
-// අපේ අලුත් Barcode Form එක මෙතනින් Import කරගන්නවා 🎯
-import AddProductForm from '@/components/products/AddProductForm';
-
-import {
-  Package, Plus, RefreshCw, Pencil, Trash2, Download,
-  AlertTriangle, Tag, Gift, X, Check, Clock,
-  Upload,
-} from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
+import { useForm } from 'react-hook-form';
+import type { Resolver } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
+import { getProducts, getSuppliers, addProduct, updateProduct, deleteProduct, deleteAllProducts } from '@/services/api';
+import type { Product, Supplier } from '@/types/types';
 import * as XLSX from 'xlsx';
-import { cn } from '@/lib/utils';
-import { fmtQty } from '@/lib/unitUtils';
+import BarcodePrintDialog from '@/components/products/BarcodePrintDialog';
+import ExcelImportDialog from '@/components/products/ExcelImportDialog';
 
-// ─── Constants ───────────────────────────────────────────────────────────────
-const UNITS = [
-  { value: 'pcs',    label: 'pcs — කෑල' },
-  { value: 'kg',     label: 'kg — කිලෝ' },
-  { value: 'g',      label: 'g — ග්‍රෑම්' },
-  { value: 'l',      label: 'l — ලීටර්' },
-  { value: 'ml',     label: 'ml — මිලි' },
-  { value: 'm',      label: 'm — මීටර්' },
-  { value: 'pack',   label: 'pack — පැකට්' },
-  { value: 'box',    label: 'box — පෙට්ටිය' },
-  { value: 'dozen',  label: 'dozen — ඩජනය' },
-  { value: 'bottle', label: 'bottle — බෝතලය' },
-  { value: 'bag',    label: 'bag — බෑගය' },
-];
+const UNITS = ['pcs', 'kg', 'g', 'L', 'ml', 'box', 'packet', 'bottle', 'can', 'bag', 'bundle', 'dozen', 'pair', 'roll', 'sheet', 'set', 'tube'];
 
-// ─── Expiry helpers ───────────────────────────────────────────────────────────
-function getExpiryStatus(expiry: string): 'expired' | 'soon' | 'ok' | 'none' {
-  if (!expiry) return 'none';
-  const exp = new Date(expiry);
-  const today = new Date();
-  const diff = (exp.getTime() - today.getTime()) / (1000 * 60 * 60 * 24);
-  if (diff < 0)   return 'expired';
-  if (diff <= 30) return 'soon';
-  return 'ok';
-}
+const generateBarcode = () => {
+  const now = Date.now().toString(36).toUpperCase();
+  const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
+  return `${now}${rand}`;
+};
 
-function ExpiryBadge({ expiry }: { expiry: string }) {
-  const status = getExpiryStatus(expiry);
-  if (status === 'none') return <span className="text-xs text-muted-foreground">—</span>;
-  const formatted = new Date(expiry).toLocaleDateString('si-LK');
-  if (status === 'expired') return (
-    <Badge variant="destructive" className="text-xs gap-1">
-      <Clock className="w-2.5 h-2.5" />
-      කල් ඉකුත්
-    </Badge>
-  );
-  if (status === 'soon') return (
-    <Badge className="text-xs bg-amber-500 text-white hover:bg-amber-500 gap-1">
-      <Clock className="w-2.5 h-2.5" />
-      {formatted}
-    </Badge>
-  );
-  return <span className="text-xs text-muted-foreground">{formatted}</span>;
-}
+const schema = z.object({
+  name: z.string().min(1, 'Required'),
+  barcode: z.string().optional(),
+  unit: z.string().default('pcs'),
+  category: z.string().optional(),
+  cost_price: z.coerce.number().min(0),
+  selling_price: z.coerce.number().min(0),
+  stock: z.coerce.number().int().min(0),
+  low_stock_threshold: z.coerce.number().int().min(0).default(10),
+  supplier_id: z.string().optional(),
+  expiry_date: z.string().optional(),
+  discount_type: z.enum(['none', 'percentage', 'fixed', 'bogo']).default('none'),
+  discount_value: z.coerce.number().min(0).default(0),
+  bogo_buy: z.coerce.number().int().min(1).default(2),
+  bogo_free: z.coerce.number().int().min(1).default(1),
+  notes: z.string().optional(),
+});
 
-// ─── Offer Panel ─────────────────────────────────────────────────────────────
-function OfferPanel({
-  product,
-  promotion,
-  onSaved,
-  shopId,
-}: {
-  product: Product;
-  promotion: Promotion | undefined;
-  onSaved: () => void;
-  shopId: string;
-}) {
-  const [offerType, setOfferType] = useState<'none' | 'discount' | 'promo'>('none');
-  const [discountVal, setDiscountVal] = useState(String(product.discount_value || ''));
-  const [buyQty, setBuyQty]   = useState(String(promotion?.buy_qty   ?? ''));
-  const [freeQty, setFreeQty] = useState(String(promotion?.free_qty ?? ''));
-  const [saving, setSaving]   = useState(false);
+type FormData = z.infer<typeof schema>;
 
-  const handleSaveDiscount = async () => {
-    const val = parseFloat(discountVal);
-    if (isNaN(val) || val <= 0 || val > 100) { toast.error('වට්ටම 1–100 අතර ඇතුළත් කරන්න'); return; }
-    setSaving(true);
-    try {
-      await setProductDiscount(product.id, 'percent', val);
-      toast.success(`${product.name} — ${val}% වට්ටම සුරකිණ`);
-      setOfferType('none');
-      onSaved();
-    } catch { toast.error('දෝෂය'); }
-    finally { setSaving(false); }
-  };
+const ProductsPage: React.FC = () => {
+  const { profile, shop } = useAuth();
+  const { t } = useLanguage();
+  const [products, setProducts] = useState<Product[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [editProduct, setEditProduct] = useState<Product | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [deleteAll, setDeleteAll] = useState(false);
+  const [barcodePrint, setBarcodePrint] = useState<Product | null>(null);
+  const [showImport, setShowImport] = useState(false);
 
-  const handleRemoveDiscount = async () => {
-    setSaving(true);
-    try {
-      await setProductDiscount(product.id, 'none', 0);
-      toast.success('වට්ටම ඉවත් කළා');
-      setOfferType('none');
-      onSaved();
-    } catch { toast.error('දෝෂය'); }
-    finally { setSaving(false); }
-  };
+  const form = useForm<FormData>({ resolver: zodResolver(schema) as Resolver<FormData>, defaultValues: { unit: 'pcs', discount_type: 'none', low_stock_threshold: 10, cost_price: 0, selling_price: 0, stock: 0, discount_value: 0, bogo_buy: 2, bogo_free: 1 } });
 
-  const handleSavePromo = async () => {
-    const buy  = parseInt(buyQty,  10);
-    const free = parseInt(freeQty, 10);
-    if (isNaN(buy) || buy < 1 || isNaN(free) || free < 1) { toast.error('Buy / Free ප්‍රමාණය ඇතුළත් කරන්න'); return; }
-    setSaving(true);
-    try {
-      await upsertPromotion(product.id, product.barcode, buy, free, shopId);
-      toast.success(`Buy ${buy} Get ${free} Free — Promotion සුරකිණ`);
-      setOfferType('none');
-      onSaved();
-    } catch { toast.error('දෝෂය'); }
-    finally { setSaving(false); }
-  };
-
-  const handleRemovePromo = async () => {
-    setSaving(true);
-    try {
-      await deactivatePromotion(product.id);
-      toast.success('Promotion ඉවත් කළා');
-      setOfferType('none');
-      onSaved();
-    } catch { toast.error('දෝෂය'); }
-    finally { setSaving(false); }
-  };
-
-  const hasDiscount = product.discount_type === 'percent' && product.discount_value > 0;
-  const hasPromo    = !!promotion && promotion.active;
-
-  return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap gap-1.5">
-        {hasDiscount && (
-          <Badge variant="secondary" className="gap-1 text-xs">
-            <Tag className="w-3 h-3" />
-            {product.discount_value}% Off
-            <button onClick={handleRemoveDiscount} className="ml-0.5 hover:text-destructive" disabled={saving}>
-              <X className="w-2.5 h-2.5" />
-            </button>
-          </Badge>
-        )}
-        {hasPromo && (
-          <Badge variant="secondary" className="gap-1 text-xs">
-            <Gift className="w-3 h-3" />
-            Buy {promotion.buy_qty} Get {promotion.free_qty} Free
-            <button onClick={handleRemovePromo} className="ml-0.5 hover:text-destructive" disabled={saving}>
-              <X className="w-2.5 h-2.5" />
-            </button>
-          </Badge>
-        )}
-        {!hasDiscount && !hasPromo && <span className="text-xs text-muted-foreground">—</span>}
-      </div>
-
-      {offerType === 'none' ? (
-        <div className="flex gap-1">
-          <Button variant="outline" size="sm" className="h-6 text-xs px-2 gap-1"
-            onClick={() => setOfferType('discount')}>
-            <Tag className="w-3 h-3" />වට්ටම
-          </Button>
-          <Button variant="outline" size="sm" className="h-6 text-xs px-2 gap-1"
-            onClick={() => setOfferType('promo')}>
-            <Gift className="w-3 h-3" />Promo
-          </Button>
-        </div>
-      ) : offerType === 'discount' ? (
-        <div className="flex items-center gap-1">
-          <Input type="number" min="1" max="100" placeholder="%" value={discountVal}
-            onChange={e => setDiscountVal(e.target.value)} className="h-7 w-16 text-xs px-2" />
-          <span className="text-xs text-muted-foreground">%</span>
-          <Button size="sm" className="h-7 px-2" onClick={handleSaveDiscount} disabled={saving}>
-            <Check className="w-3 h-3" />
-          </Button>
-          <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => setOfferType('none')}>
-            <X className="w-3 h-3" />
-          </Button>
-        </div>
-      ) : (
-        <div className="flex items-center gap-1 flex-wrap">
-          <span className="text-xs text-muted-foreground">Buy</span>
-          <Input type="number" min="1" placeholder="2" value={buyQty}
-            onChange={e => setBuyQty(e.target.value)} className="h-7 w-12 text-xs px-2" />
-          <span className="text-xs text-muted-foreground">Get</span>
-          <Input type="number" min="1" placeholder="1" value={freeQty}
-            onChange={e => setFreeQty(e.target.value)} className="h-7 w-12 text-xs px-2" />
-          <span className="text-xs text-muted-foreground">Free</span>
-          <Button size="sm" className="h-7 px-2" onClick={handleSavePromo} disabled={saving}>
-            <Check className="w-3 h-3" />
-          </Button>
-          <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => setOfferType('none')}>
-            <X className="w-3 h-3" />
-          </Button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Main Page ────────────────────────────────────────────────────────────────
-export default function ProductsPage() {
-  const { profile } = useAuth();
-  const isAdmin = profile?.role === 'admin';
-  const shopId = profile?.shop_id ?? '';
-
-  const [products,   setProducts]   = useState<Product[]>([]);
-  const [branches,   setBranches]   = useState<Branch[]>([]);
-  const [suppliers,  setSuppliers]  = useState<Supplier[]>([]);
-  const [promotions, setPromotions] = useState<Promotion[]>([]);
-  const [loading,    setLoading]    = useState(true);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<Product | null>(null);
-  const [search,   setSearch]   = useState('');
-  const [expiryFilter, setExpiryFilter] = useState<'all' | 'expired' | 'soon'>('all');
-
-  // ── Smart import state ────────────────────────────────────────────────────
-  const [smartImportOpen, setSmartImportOpen] = useState(false);
-
-  const load = useCallback(async () => {
+  const loadData = async () => {
+    if (!shop?.id) return;
     setLoading(true);
-    try {
-      const [p, b, s, pr] = await Promise.all([
-        getProducts(), getBranches(), getSuppliers(), getPromotions(),
-      ]);
-      setProducts(p);
-      setBranches(b);
-      setSuppliers(s);
-      setPromotions(pr);
-    } catch {
-      toast.error('දත්ත ලබාගැනීමේ දෝෂය');
-    } finally {
-      setLoading(false);
+    const [prodRes, suppRes] = await Promise.all([
+      getProducts(shop.id, search || undefined),
+      getSuppliers(shop.id),
+    ]);
+    setProducts(prodRes.data as Product[]);
+    setSuppliers(suppRes.data);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadData(); }, [shop?.id]);
+  useEffect(() => {
+    const timer = setTimeout(() => loadData(), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const openAdd = () => {
+    form.reset({ unit: 'pcs', discount_type: 'none', low_stock_threshold: 10, cost_price: 0, selling_price: 0, stock: 0, discount_value: 0, bogo_buy: 2, bogo_free: 1 });
+    setEditProduct(null);
+    setShowForm(true);
+  };
+
+  const openEdit = (p: Product) => {
+    form.reset({
+      name: p.name,
+      barcode: p.barcode || '',
+      unit: p.unit || 'pcs',
+      category: p.category || '',
+      cost_price: p.cost_price,
+      selling_price: p.selling_price,
+      stock: p.stock,
+      low_stock_threshold: p.low_stock_threshold,
+      supplier_id: p.supplier_id || '',
+      expiry_date: p.expiry_date || '',
+      discount_type: p.discount_type || 'none',
+      discount_value: p.discount_value || 0,
+      bogo_buy: p.bogo_buy ?? 2,
+      bogo_free: p.bogo_free ?? 1,
+      notes: p.notes || '',
+    });
+    setEditProduct(p);
+    setShowForm(true);
+  };
+
+  const onSubmit = async (data: FormData) => {
+    if (!shop?.id) return;
+    if (data.cost_price > data.selling_price) toast.warning(t('costHigherThanSelling'));
+
+    const payload = {
+      ...data,
+      shop_id: shop.id,
+      unit: data.unit || 'pcs',
+      barcode: data.barcode || undefined,
+      supplier_id: data.supplier_id || undefined,
+      expiry_date: data.expiry_date || undefined,
+      category: data.category || undefined,
+      notes: data.notes || undefined,
+      bogo_buy: data.discount_type === 'bogo' ? (data.bogo_buy ?? 2) : undefined,
+      bogo_free: data.discount_type === 'bogo' ? (data.bogo_free ?? 1) : undefined,
+    };
+
+    if (editProduct) {
+      const { error } = await updateProduct(editProduct.id, payload);
+      if (error) { toast.error((error as Error).message); return; }
+    } else {
+      // Check duplicate barcode
+      if (data.barcode) {
+        const existing = products.find(p => p.barcode === data.barcode);
+        if (existing) { toast.error(t('duplicateBarcode')); return; }
+      }
+      const { error } = await addProduct(payload);
+      if (error) { toast.error((error as Error).message); return; }
     }
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
-  // promo map: product_id → active promotion
-  const promoMap = new Map<string, Promotion>();
-  for (const pr of promotions) {
-    if (pr.active) promoMap.set(pr.product_id, pr);
-  }
-
-  const filtered = products.filter(p => {
-    const matchSearch = !search ||
-      p.name.toLowerCase().includes(search.toLowerCase()) ||
-      p.barcode.includes(search);
-    const status = getExpiryStatus(p.expiry);
-    const matchExpiry =
-      expiryFilter === 'all'     ? true :
-      expiryFilter === 'expired' ? status === 'expired' :
-                                   status === 'soon';
-    return matchSearch && matchExpiry;
-  });
-
-  const getSupplierName = (id: string | null) => suppliers.find(s => s.id === id)?.name ?? '—';
-  const getUnitLabel    = (unit: string) => UNITS.find(u => u.value === unit)?.value ?? unit;
-
-  // ── Form එකෙන් එන දත්ත සේව් කරන ලොජික් එක ──
-  const handleSaveProductFromForm = async (productData: { name: string; price: number; barcode: string; shop_id: string | number }) => {
-    try {
-      // මෙතනදී default අගයන් සහ මුදලාලි දීපු දත්ත එකතු කරලා Supabase එකට දානවා
-      await addProduct(
-        productData.barcode.trim(),
-        productData.name.trim(),
-        'pcs',        // Default unit
-        0,            // Cost price එක default 0යි
-        productData.price,
-        0,            // Initial stock quantity එක default 0යි
-        '',           // Expiry date default හිස්
-        null,         // Branch ID null
-        null,         // Supplier ID null
-        shopId
-      );
-      toast.success('භාණ්ඩය සාර්ථකව එකතු කළා!');
-      setDialogOpen(false);
-      load(); // ලැයිස්තුව Refresh කරනවා
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'දෝෂය';
-      toast.error(msg.includes('duplicate') || msg.includes('unique') ? 'Barcode දැනටමත් ඇත' : msg);
-    }
+    toast.success(t('success'));
+    setShowForm(false);
+    loadData();
   };
 
   const handleDelete = async () => {
-    if (!deleteTarget) return;
-    try {
-      await deleteProduct(deleteTarget.id);
-      toast.success('භාණ්ඩය ඉවත් කළා');
-      setDeleteTarget(null);
-      load();
-    } catch { toast.error('ඉවත් කිරීම අසාර්ථකයි'); }
+    if (!deleteId) return;
+    const { error } = await deleteProduct(deleteId);
+    if (error) { toast.error((error as Error).message); } else { toast.success(t('success')); loadData(); }
+    setDeleteId(null);
   };
 
-  const handleExport = () => {
-    const rows = filtered.map(p => ({
-      'Barcode':          p.barcode,
-      'නාමය':            p.name,
-      'ඒකකය':            p.unit,
-      'ගැනුම් මිල (Rs.)': p.cost,
-      'විකිණුම් මිල (Rs.)': p.price,
-      'Stock':            p.qty,
-      'කල් ඉකුත් වීම':   p.expiry || '—',
-      'වට්ටම':           p.discount_type === 'percent' ? `${p.discount_value}%` : '—',
-      'Promotion': (() => { const pr = promoMap.get(p.id); return pr ? `Buy ${pr.buy_qty} Get ${pr.free_qty} Free` : '—'; })(),
-      'සැපයුම්කරු':      getSupplierName(p.supplier_id),
-      'Asset Value (Rs.)': p.qty * p.price,
-      'Profit Margin (%)': p.price > 0 ? (((p.price - p.cost) / p.price) * 100).toFixed(1) : '0',
+  const handleDeleteAll = async () => {
+    if (!shop?.id) return;
+    const { error } = await deleteAllProducts(shop.id);
+    if (error) { toast.error((error as Error).message); } else { toast.success(t('success')); loadData(); }
+    setDeleteAll(false);
+  };
+
+  const handleExcelExport = () => {
+    const rows = products.map(p => ({
+      Name: p.name,
+      Barcode: p.barcode || '',
+      Category: p.category || '',
+      'Cost Price': p.cost_price,
+      'Selling Price': p.selling_price,
+      'Profit Margin': p.selling_price > 0 ? (((p.selling_price - p.cost_price) / p.selling_price) * 100).toFixed(2) + '%' : '0%',
+      Stock: p.stock,
+      'Low Stock Threshold': p.low_stock_threshold,
+      'Expiry Date': p.expiry_date || '',
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
-    const wb_append = XLSX.utils.book_append_sheet;
-    wb_append(wb, ws, 'Products');
-    XLSX.writeFile(wb, `products_${new Date().toISOString().split('T')[0]}.xlsx`);
+    XLSX.utils.book_append_sheet(wb, ws, 'Products');
+    XLSX.writeFile(wb, `products_${shop?.name}_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  const expiredCount  = products.filter(p => getExpiryStatus(p.expiry) === 'expired').length;
-  const expiringSoon  = products.filter(p => getExpiryStatus(p.expiry) === 'soon').length;
-  const discountedCount = products.filter(p => p.discount_type === 'percent' && p.discount_value > 0).length;
-  const promoCount    = [...promoMap.values()].filter(p => p.active).length;
+  const lowStockProducts = products.filter(p => p.stock <= p.low_stock_threshold);
+  const expiringProducts = products.filter(p => {
+    if (!p.expiry_date) return false;
+    const days = Math.ceil((new Date(p.expiry_date).getTime() - Date.now()) / 86400000);
+    return days <= 30 && days > 0;
+  });
+
+  const discountType = form.watch('discount_type');
 
   return (
-    <AppLayout>
-      <div className="space-y-4">
-        {/* Header */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Package className="w-5 h-5 text-primary" />
-            <h2 className="text-xl font-bold text-balance">භාණ්ඩ කළමනාකරණය</h2>
-          </div>
-          <div className="flex items-center gap-2 shrink-0 flex-wrap">
-            <Input
-              placeholder="හොයන්න..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              className="w-40 px-3"
-            />
-            <Button variant="outline" size="sm" onClick={load} className="gap-1.5">
-              <RefreshCw className="w-3.5 h-3.5" />
-              <span className="sr-only md:not-sr-only">යාවත්කාලීන</span>
+    <MainLayout>
+      <div className="space-y-4 animate-fade-in-up">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+          <h1 className="text-xl font-bold text-balance">{t('products')}</h1>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={() => setShowImport(true)}>
+              <Upload className="h-3.5 w-3.5 mr-1" /><span className="hidden sm:inline">{t('importExcel')}</span>
             </Button>
-            {isAdmin && (
-              <>
-                <Button variant="outline" size="sm" onClick={handleExport} className="gap-1.5">
-                  <Download className="w-3.5 h-3.5" />
-                  <span className="sr-only md:not-sr-only">Excel</span>
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setSmartImportOpen(true)} className="gap-1.5">
-                  <Upload className="w-3.5 h-3.5" />
-                  <span className="sr-only md:not-sr-only">Import</span>
-                </Button>
-                <Button size="sm" onClick={() => setDialogOpen(true)} className="gap-1.5">
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>නව භාණ්ඩය</span>
-                </Button>
-              </>
-            )}
+            <Button variant="outline" size="sm" onClick={handleExcelExport}>
+              <Download className="h-3.5 w-3.5 mr-1" /><span className="hidden sm:inline">{t('exportExcel')}</span>
+            </Button>
+            <Button variant="outline" size="sm" className="text-destructive border-destructive/30 hover:bg-destructive/10" onClick={() => setDeleteAll(true)}>
+              <Trash2 className="h-3.5 w-3.5 mr-1" /><span className="hidden sm:inline">{t('deleteAll')}</span>
+            </Button>
+            <Button size="sm" onClick={openAdd}>
+              <Plus className="h-3.5 w-3.5 mr-1" />{t('addProductBtn')}
+            </Button>
           </div>
         </div>
 
-        {/* Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {[
-            { label: 'සම්පූර්ණ භාණ්ඩ',    value: products.length,                               color: 'text-primary' },
-            { label: 'අඩු Stock (< 10)',   value: products.filter(p => p.qty < 10).length, color: 'text-destructive' },
-            { label: 'කල් ඉකුත් / ළඟාවේ', value: expiredCount + expiringSoon,              color: 'text-amber-500' },
-            { label: 'Offers සක්‍රීය',      value: discountedCount + promoCount,             color: 'text-green-500' },
-          ].map((s, i) => (
-            <Card key={i} className="h-full">
-              <CardContent className="pt-4 pb-4">
-                <p className="text-xs text-muted-foreground text-pretty">{s.label}</p>
-                {loading
-                  ? <Skeleton className="h-7 w-16 mt-1 bg-muted" />
-                  : <p className={`text-2xl font-bold mt-1 ${s.color}`}>{s.value}</p>}
-              </CardContent>
-            </Card>
-          ))}
+        {/* Alerts */}
+        {(lowStockProducts.length > 0 || expiringProducts.length > 0) && (
+          <div className="space-y-2">
+            {lowStockProducts.length > 0 && (
+              <div className="flex items-center gap-2 bg-warning/10 border border-warning/30 rounded-lg px-4 py-2">
+                <AlertTriangle className="h-4 w-4 text-warning shrink-0" />
+                <span className="text-sm">{lowStockProducts.length} products low stock</span>
+              </div>
+            )}
+            {expiringProducts.length > 0 && (
+              <div className="flex items-center gap-2 bg-destructive/10 border border-destructive/30 rounded-lg px-4 py-2">
+                <AlertTriangle className="h-4 w-4 text-destructive shrink-0" />
+                <span className="text-sm">{expiringProducts.length} products expiring within 30 days</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Search */}
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input value={search} onChange={e => setSearch(e.target.value)} placeholder={t('searchProduct')} className="pl-9 px-3" />
         </div>
 
-        <Tabs defaultValue="products">
-          <TabsList className="flex-wrap h-auto gap-1">
-            <TabsTrigger value="products" className="gap-1.5">
-              <Package className="w-3.5 h-3.5" />
-              <span>භාණ්ඩ ලැයිස්තුව</span>
-            </TabsTrigger>
-            {isAdmin && (
-              <TabsTrigger value="offers" className="gap-1.5">
-                <Tag className="w-3.5 h-3.5" />
-                <span>Offers</span>
-                {(discountedCount + promoCount) > 0 && (
-                  <Badge variant="secondary" className="ml-1 h-4 min-w-4 text-xs px-1">
-                    {discountedCount + promoCount}
-                  </Badge>
-                )}
-              </TabsTrigger>
-            )}
-            {(expiredCount + expiringSoon) > 0 && (
-              <TabsTrigger value="expiry" className="gap-1.5">
-                <Clock className="w-3.5 h-3.5" />
-                <span>Expiry</span>
-                <Badge variant="destructive" className="ml-1 h-4 min-w-4 text-xs px-1">
-                  {expiredCount + expiringSoon}
-                </Badge>
-              </TabsTrigger>
-            )}
-          </TabsList>
-
-          {/* ── Products Tab ── */}
-          <TabsContent value="products" className="mt-3">
-            <Card>
-              <CardContent className="p-0">
-                <div className="w-full max-w-full overflow-x-auto bg-card rounded-lg">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="whitespace-nowrap">Barcode</TableHead>
-                        <TableHead className="whitespace-nowrap">නාමය</TableHead>
-                        <TableHead className="whitespace-nowrap">ඒකකය</TableHead>
-                        {isAdmin && <TableHead className="whitespace-nowrap">ගැනුම් මිල</TableHead>}
-                        <TableHead className="whitespace-nowrap">විකිණුම් මිල</TableHead>
-                        <TableHead className="whitespace-nowrap">Stock</TableHead>
-                        <TableHead className="whitespace-nowrap">කල් ඉකුත්</TableHead>
-                        <TableHead className="whitespace-nowrap">Offer</TableHead>
-                        <TableHead className="whitespace-nowrap">සැපයුම්කරු</TableHead>
-                        {isAdmin && <TableHead className="whitespace-nowrap text-right">ක්‍රියා</TableHead>}
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {loading ? (
-                        Array.from({ length: 5 }).map((_, i) => (
-                          <TableRow key={i}>
-                            {Array.from({ length: isAdmin ? 10 : 8 }).map((__, j) => (
-                              <TableCell key={j}><Skeleton className="h-5 w-full bg-muted" /></TableCell>
-                            ))}
-                          </TableRow>
-                        ))
-                      ) : filtered.length === 0 ? (
-                        <TableRow>
-                          <TableCell colSpan={isAdmin ? 10 : 8} className="text-center py-12 text-muted-foreground whitespace-nowrap">
-                            {search ? 'හොයාගත නොහැකිය' : 'භාණ්ඩ නොමැත'}
-                          </TableCell>
-                        </TableRow>
-                      ) : (
-                        filtered.map(p => {
-                          const promo  = promoMap.get(p.id);
-                          const expSt  = getExpiryStatus(p.expiry);
-                          return (
-                            <TableRow key={p.id} className={cn(expSt === 'expired' && 'bg-destructive/5')}>
-                              <TableCell className="whitespace-nowrap font-mono text-sm">{p.barcode}</TableCell>
-                              <TableCell className="whitespace-nowrap">
-                                <div className="flex items-center gap-1.5">
-                                  {p.qty < 10 && <AlertTriangle className="w-3.5 h-3.5 text-destructive shrink-0" />}
-                                  {p.name}
-                                </div>
-                              </TableCell>
-                              <TableCell className="whitespace-nowrap">
-                                <Badge variant="outline" className="text-xs font-mono">
-                                  {getUnitLabel(p.unit)}
-                                </Badge>
-                              </TableCell>
-                              {isAdmin && (
-                                <TableCell className="whitespace-nowrap text-sm">Rs. {p.cost.toFixed(2)}</TableCell>
-                              )}
-                              <TableCell className="whitespace-nowrap font-medium">Rs. {p.price.toFixed(2)}</TableCell>
-                              <TableCell className="whitespace-nowrap">
-                                <Badge variant={p.qty < 10 ? 'destructive' : p.qty < 20 ? 'secondary' : 'outline'}>
-                                  {fmtQty(Number(p.qty), p.unit)} {getUnitLabel(p.unit)}
-                                </Badge>
-                              </TableCell>
-                              <TableCell className="whitespace-nowrap">
-                                <ExpiryBadge expiry={p.expiry} />
-                              </TableCell>
-                              <TableCell className="whitespace-nowrap">
-                                <div className="flex flex-wrap gap-1">
-                                  {p.discount_type === 'percent' && p.discount_value > 0 && (
-                                    <Badge className="text-xs bg-amber-500 text-white hover:bg-amber-500 gap-1">
-                                      <Tag className="w-2.5 h-2.5" />{p.discount_value}%
-                                    </Badge>
-                                  )}
-                                  {promo && promo.active && (
-                                    <Badge className="text-xs bg-green-500 text-white hover:bg-green-500 gap-1">
-                                      <Gift className="w-2.5 h-2.5" />B{promo.buy_qty}G{promo.free_qty}
-                                    </Badge>
-                                  )}
-                                  {!(p.discount_type === 'percent' && p.discount_value > 0) && !(promo && promo.active) && (
-                                    <span className="text-xs text-muted-foreground">—</span>
-                                  )}
-                                </div>
-                              </TableCell>
-                              <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                                {getSupplierName(p.supplier_id)}
-                              </TableCell>
-                              {isAdmin && (
-                                <TableCell className="whitespace-nowrap text-right">
-                                  <div className="flex items-center justify-end gap-1">
-                                    <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteTarget(p)}>
-                                      <Trash2 className="w-3.5 h-3.5" />
-                                    </Button>
-                                  </div>
-                                </TableCell>
-                              )}
-                            </TableRow>
-                          );
-                        })
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* ── Offers Tab ── */}
-          {isAdmin && (
-            <TabsContent value="offers" className="mt-3">
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base flex items-center gap-2 text-balance">
-                    <Tag className="w-4 h-4 text-amber-500" />
-                    Discount & Promotion කළමනාකරණය
-                  </CardTitle>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    භාණ්ඩයක් සිට Offer button click කර වට්ටමක් හෝ Buy X Get Y Free promotion set කරන්න.
-                  </p>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <div className="w-full max-w-full overflow-x-auto bg-card rounded-b-lg">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="whitespace-nowrap">Barcode</TableHead>
-                          <TableHead className="whitespace-nowrap">නාමය</TableHead>
-                          <TableHead className="whitespace-nowrap">ඒකකය</TableHead>
-                          <TableHead className="whitespace-nowrap">මිල (Rs.)</TableHead>
-                          <TableHead className="whitespace-nowrap">Stock</TableHead>
-                          <TableHead className="whitespace-nowrap min-w-[260px]">Discount / Promotion</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {loading
-                          ? Array.from({ length: 5 }).map((_, i) => (
-                              <TableRow key={i}>{[1,2,3,4,5,6].map(j => (
-                                <TableCell key={j}><Skeleton className="h-5 w-full bg-muted" /></TableCell>
-                              ))}</TableRow>
-                            ))
-                          : filtered.length === 0
-                            ? <TableRow><TableCell colSpan={6} className="text-center py-12 text-muted-foreground whitespace-nowrap">
-                                {search ? 'හොයාගත නොහැකිය' : 'භාණ්ඩ නොමැත'}
-                              </TableCell></TableRow>
-                            : filtered.map(p => (
-                                <TableRow key={p.id}>
-                                  <TableCell className="whitespace-nowrap font-mono text-sm">{p.barcode}</TableCell>
-                                  <TableCell className="whitespace-nowrap font-medium">{p.name}</TableCell>
-                                  <TableCell className="whitespace-nowrap">
-                                    <Badge variant="outline" className="text-xs font-mono">{p.unit}</Badge>
-                                  </TableCell>
-                                  <TableCell className="whitespace-nowrap">Rs. {p.price.toFixed(2)}</TableCell>
-                                  <TableCell className="whitespace-nowrap">
-                                    <Badge variant={p.qty < 10 ? 'destructive' : 'outline'}>{fmtQty(Number(p.qty), p.unit)}</Badge>
-                                  </TableCell>
-                                  <TableCell>
-                                    <OfferPanel product={p} promotion={promoMap.get(p.id)} onSaved={load} shopId={shopId} />
-                                  </TableCell>
-                                </TableRow>
-                              ))
-                        }
-                      </TableBody>
-                    </Table>
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-          )}
-        </Tabs>
-
-        {/* ── Popup Dialog එක ඇතුළට අපේ අලුත් Form එක දානවා ── */}
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogContent className="sm:max-w-[450px] p-4 gap-0 max-h-[90vh] overflow-y-auto">
-            <DialogHeader className="pb-3">
-              <DialogTitle className="text-base text-balance">නව භාණ්ඩයක් එක් කරන්න</DialogTitle>
-            </DialogHeader>
-            <div className="pt-2">
-              <AddProductForm shopId={shopId} onSaveProduct={handleSaveProductFromForm} />
+        {/* Table */}
+        <Card className="shadow-[var(--shadow-card)]">
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-muted/40">
+                    {[t('productName'), t('barcode'), t('costPrice'), t('sellingPrice'), t('stock'), t('supplier'), t('expiryDate'), t('discountOffer'), t('actions')].map(h => (
+                      <th key={h} className="text-left px-3 py-2.5 text-xs text-muted-foreground font-medium whitespace-nowrap">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    Array.from({ length: 5 }).map((_, i) => (
+                      <tr key={i} className="border-b border-border/50">
+                        {Array.from({ length: 9 }).map((_, j) => (
+                          <td key={j} className="px-3 py-2"><div className="h-4 bg-muted rounded animate-pulse" /></td>
+                        ))}
+                      </tr>
+                    ))
+                  ) : products.length === 0 ? (
+                    <tr><td colSpan={9} className="px-3 py-10 text-center text-sm text-muted-foreground">{t('noData')}</td></tr>
+                  ) : products.map(p => {
+                    const isLow = p.stock <= p.low_stock_threshold;
+                    const isExpiring = p.expiry_date && Math.ceil((new Date(p.expiry_date).getTime() - Date.now()) / 86400000) <= 30;
+                    return (
+                      <tr key={p.id} className="border-b border-border/50 hover:bg-muted/20">
+                        <td className="px-3 py-2 whitespace-nowrap font-medium">{p.name}</td>
+                        <td className="px-3 py-2 whitespace-nowrap text-muted-foreground text-xs">{p.barcode || '—'}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">Rs. {p.cost_price.toLocaleString()}</td>
+                        <td className="px-3 py-2 whitespace-nowrap font-semibold text-primary">Rs. {p.selling_price.toLocaleString()}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          <Badge variant={p.stock === 0 ? 'destructive' : isLow ? 'secondary' : 'outline'} className="text-xs">
+                            {isLow && <AlertTriangle className="h-2.5 w-2.5 mr-0.5" />}{p.stock}
+                          </Badge>
+                        </td>
+                        <td className="px-3 py-2 whitespace-nowrap text-xs">{(p as unknown as { suppliers?: { name: string } }).suppliers?.name || '—'}</td>
+                        <td className="px-3 py-2 whitespace-nowrap text-xs">
+                          {p.expiry_date ? (
+                            <span className={isExpiring ? 'text-destructive font-medium' : ''}>
+                              {p.expiry_date}
+                            </span>
+                          ) : '—'}
+                        </td>
+                        <td className="px-3 py-2 whitespace-nowrap text-xs">
+                          {p.discount_type && p.discount_type !== 'none' ? (
+                            <Badge variant="secondary" className="text-xs">
+                              {p.discount_type === 'bogo' ? 'BOGO' : `${p.discount_type === 'percentage' ? p.discount_value + '%' : 'Rs.' + p.discount_value} off`}
+                            </Badge>
+                          ) : '—'}
+                        </td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          <div className="flex items-center gap-1">
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(p)}><Edit2 className="h-3.5 w-3.5" /></Button>
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setBarcodePrint(p)}><Printer className="h-3.5 w-3.5" /></Button>
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:bg-destructive/10" onClick={() => setDeleteId(p.id)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          </DialogContent>
-        </Dialog>
-
-        {/* Delete Dialog */}
-        <AlertDialog open={!!deleteTarget} onOpenChange={io => !io && setDeleteTarget(null)}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>ඔබට විශ්වාසද?</AlertDialogTitle>
-              <AlertDialogDescription className="text-pretty">
-                {deleteTarget?.name} භාණ්ඩය පද්ධතියෙන් සම්පූර්ණයෙන්ම ඉවත් කරනු ඇත.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter className="mt-2">
-              <AlertDialogCancel>අවලංගු කරන්න</AlertDialogCancel>
-              <AlertDialogAction className="bg-destructive hover:bg-destructive text-destructive-foreground" onClick={handleDelete}>
-                ඉවත් කරන්න
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-
-        <SmartImportDialog open={smartImportOpen} onOpenChange={setSmartImportOpen} onImported={load} />
+          </CardContent>
+        </Card>
       </div>
-    </AppLayout>
+
+      {/* Add/Edit Dialog */}
+      <Dialog open={showForm} onOpenChange={setShowForm}>
+        <DialogContent className="max-w-[calc(100%-2rem)] md:max-w-2xl max-h-[90dvh] overflow-y-auto">
+          <DialogHeader><DialogTitle>{editProduct ? t('editProduct') : t('addProductBtn')}</DialogTitle></DialogHeader>
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <FormField control={form.control} name="name" render={({ field }) => (
+                  <FormItem><FormLabel className="text-sm font-normal">{t('productName')}</FormLabel>
+                    <FormControl><Input className="px-3" {...field} /></FormControl><FormMessage /></FormItem>
+                )} />
+                {/* Barcode with auto-generate button */}
+                <FormField control={form.control} name="barcode" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="text-sm font-normal">{t('barcode')}</FormLabel>
+                    <div className="flex gap-2">
+                      <FormControl><Input className="px-3 flex-1" placeholder="Enter or generate" {...field} /></FormControl>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="h-9 w-9 shrink-0"
+                        title="Auto-generate barcode"
+                        onClick={() => field.onChange(generateBarcode())}
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+                {/* Unit dropdown */}
+                <FormField control={form.control} name="unit" render={({ field }) => (
+                  <FormItem><FormLabel className="text-sm font-normal">Unit</FormLabel>
+                    <Select value={field.value || 'pcs'} onValueChange={field.onChange}>
+                      <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                      <SelectContent>
+                        {UNITS.map(u => <SelectItem key={u} value={u}>{u}</SelectItem>)}
+                      </SelectContent>
+                    </Select><FormMessage /></FormItem>
+                )} />
+                <FormField control={form.control} name="category" render={({ field }) => (
+                  <FormItem><FormLabel className="text-sm font-normal">{t('category')}</FormLabel>
+                    <FormControl><Input className="px-3" {...field} /></FormControl><FormMessage /></FormItem>
+                )} />
+                <FormField control={form.control} name="supplier_id" render={({ field }) => (
+                  <FormItem><FormLabel className="text-sm font-normal">{t('supplier')}</FormLabel>
+                    <Select value={field.value || ''} onValueChange={field.onChange}>
+                      <FormControl><SelectTrigger><SelectValue placeholder="Select supplier" /></SelectTrigger></FormControl>
+                      <SelectContent>
+                        <SelectItem value="none">None</SelectItem>
+                        {suppliers.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select><FormMessage /></FormItem>
+                )} />
+                <FormField control={form.control} name="cost_price" render={({ field }) => (
+                  <FormItem><FormLabel className="text-sm font-normal">{t('costPrice')}</FormLabel>
+                    <FormControl><Input type="number" className="px-3" {...field} /></FormControl><FormMessage /></FormItem>
+                )} />
+                <FormField control={form.control} name="selling_price" render={({ field }) => (
+                  <FormItem><FormLabel className="text-sm font-normal">{t('sellingPrice')}</FormLabel>
+                    <FormControl><Input type="number" className="px-3" {...field} /></FormControl><FormMessage /></FormItem>
+                )} />
+                <FormField control={form.control} name="stock" render={({ field }) => (
+                  <FormItem><FormLabel className="text-sm font-normal">{t('stock')}</FormLabel>
+                    <FormControl><Input type="number" className="px-3" {...field} /></FormControl><FormMessage /></FormItem>
+                )} />
+                <FormField control={form.control} name="low_stock_threshold" render={({ field }) => (
+                  <FormItem><FormLabel className="text-sm font-normal">{t('lowStockThreshold')}</FormLabel>
+                    <FormControl><Input type="number" className="px-3" {...field} /></FormControl><FormMessage /></FormItem>
+                )} />
+                <FormField control={form.control} name="expiry_date" render={({ field }) => (
+                  <FormItem><FormLabel className="text-sm font-normal">{t('expiryDate')}</FormLabel>
+                    <FormControl><Input type="date" className="px-3" {...field} /></FormControl><FormMessage /></FormItem>
+                )} />
+                <FormField control={form.control} name="discount_type" render={({ field }) => (
+                  <FormItem><FormLabel className="text-sm font-normal">{t('discountOffer')}</FormLabel>
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                      <SelectContent>
+                        <SelectItem value="none">{t('noneDiscount')}</SelectItem>
+                        <SelectItem value="percentage">{t('percentage')}</SelectItem>
+                        <SelectItem value="fixed">{t('fixed')}</SelectItem>
+                        <SelectItem value="bogo">{t('bogoOffer')}</SelectItem>
+                      </SelectContent>
+                    </Select><FormMessage /></FormItem>
+                )} />
+                {discountType !== 'none' && discountType !== 'bogo' && (
+                  <FormField control={form.control} name="discount_value" render={({ field }) => (
+                    <FormItem><FormLabel className="text-sm font-normal">{t('discountValue')}</FormLabel>
+                      <FormControl><Input type="number" className="px-3" {...field} /></FormControl><FormMessage /></FormItem>
+                  )} />
+                )}
+              </div>
+
+              {/* BOGO buy/free config — shown only when bogo selected */}
+              {discountType === 'bogo' && (
+                <div className="border border-primary/20 bg-primary/5 rounded-lg p-3 space-y-3">
+                  <p className="text-xs font-semibold text-primary">Buy X Get Y Free — Config</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <FormField control={form.control} name="bogo_buy" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel className="text-sm font-normal">Buy (X) qty</FormLabel>
+                        <FormControl><Input type="number" min={1} className="px-3" {...field} /></FormControl>
+                        <p className="text-xs text-muted-foreground">Customer buy කරන ගණන</p>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                    <FormField control={form.control} name="bogo_free" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel className="text-sm font-normal">Get Free (Y) qty</FormLabel>
+                        <FormControl><Input type="number" min={1} className="px-3" {...field} /></FormControl>
+                        <p className="text-xs text-muted-foreground">නොමිලේ ලබන ගණන</p>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                  </div>
+                  <p className="text-xs text-primary font-medium">
+                    Preview: Buy {form.watch('bogo_buy') || 2} Get {form.watch('bogo_free') || 1} Free
+                    &nbsp;(Buy {(form.watch('bogo_buy') || 2) + (form.watch('bogo_free') || 1)} pay for {form.watch('bogo_buy') || 2})
+                  </p>
+                </div>
+              )}
+
+              <FormField control={form.control} name="notes" render={({ field }) => (
+                <FormItem><FormLabel className="text-sm font-normal">{t('notes')}</FormLabel>
+                  <FormControl><Input className="px-3" {...field} /></FormControl><FormMessage /></FormItem>
+              )} />
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" onClick={() => setShowForm(false)}>{t('cancel')}</Button>
+                <Button type="submit">{t('save')}</Button>
+              </div>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirm */}
+      <AlertDialog open={!!deleteId} onOpenChange={() => setDeleteId(null)}>
+        <AlertDialogContent className="max-w-[calc(100%-2rem)] md:max-w-lg">
+          <AlertDialogHeader><AlertDialogTitle>{t('deleteProduct')}</AlertDialogTitle>
+            <AlertDialogDescription>Are you sure you want to delete this product?</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('cancel')}</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">{t('delete')}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete all confirm */}
+      <AlertDialog open={deleteAll} onOpenChange={setDeleteAll}>
+        <AlertDialogContent className="max-w-[calc(100%-2rem)] md:max-w-lg">
+          <AlertDialogHeader><AlertDialogTitle>{t('deleteAll')}</AlertDialogTitle>
+            <AlertDialogDescription>Are you sure? This will deactivate ALL products.</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('cancel')}</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeleteAll} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">{t('delete')}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Barcode Print Dialog */}
+      {barcodePrint && (
+        <BarcodePrintDialog product={barcodePrint} shopName={shop?.name || ''} onClose={() => setBarcodePrint(null)} />
+      )}
+
+      {/* Excel Import Dialog */}
+      {showImport && shop?.id && (
+        <ExcelImportDialog
+          shopId={shop.id}
+          onClose={() => setShowImport(false)}
+          onDone={() => { setShowImport(false); loadData(); toast.success('Import සාර්ථකයි!'); }}
+        />
+      )}
+    </MainLayout>
   );
-}
+};
+
+export default ProductsPage;
