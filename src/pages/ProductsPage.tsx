@@ -631,7 +631,7 @@ export default function ProductsPage() {
                                 </TableRow>
                               ))
                         }
-                      </Body>
+                      </TableBody>
                     </Table>
                   </div>
                 </CardContent>
